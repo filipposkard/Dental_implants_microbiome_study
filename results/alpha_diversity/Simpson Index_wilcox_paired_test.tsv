@@ -1,0 +1,7 @@
+".y."	"group1"	"group2"	"n1"	"n2"	"statistic"	"p"	"p.adj"	"p.adj.signif"
+"Simpson"	"tooth_12m"	"tooth_baseline"	10	10	32	0.695	1	"ns"
+"Simpson"	"tooth_12m"	"implant_baseline"	10	10	18	0.375	1	"ns"
+"Simpson"	"tooth_12m"	"implant_12m"	10	10	11	0.105	0.63	"ns"
+"Simpson"	"tooth_baseline"	"implant_baseline"	10	10	8	0.049	0.293	"ns"
+"Simpson"	"tooth_baseline"	"implant_12m"	10	10	5	0.02	0.117	"ns"
+"Simpson"	"implant_baseline"	"implant_12m"	10	10	16	0.275	1	"ns"

@@ -1,0 +1,7 @@
+".y."	"group1"	"group2"	"n1"	"n2"	"statistic"	"p"	"p.adj"	"p.adj.signif"
+"Observed"	"tooth_12m"	"tooth_baseline"	10	10	34	0.541	1	"ns"
+"Observed"	"tooth_12m"	"implant_baseline"	10	10	24	0.76	1	"ns"
+"Observed"	"tooth_12m"	"implant_12m"	10	10	8	0.097	0.583	"ns"
+"Observed"	"tooth_baseline"	"implant_baseline"	10	10	27	1	1	"ns"
+"Observed"	"tooth_baseline"	"implant_12m"	10	10	15	0.232	1	"ns"
+"Observed"	"implant_baseline"	"implant_12m"	10	10	22	0.625	1	"ns"
