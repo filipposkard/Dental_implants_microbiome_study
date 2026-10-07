@@ -1,0 +1,222 @@
+---
+title: "Microbiome Power and Effect Size Analysis"
+author: "Analysis Report"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# Configure chunk options for a clean PDF output
+knitr::opts_chunk$set(
+  echo = FALSE, 
+  warning = FALSE, 
+  message = FALSE,
+  collapse = TRUE,
+  comment = ""
+)
+```
+
+## Setup and Data Loading
+
+First, we load the necessary libraries, set up the project directories, and import the phyloseq object.
+
+```{r init}
+# 1. Define standard CRAN packages
+cran_packages <- c("pwr", "dplyr", "vegan")
+
+# Install missing CRAN packages
+for (pkg in cran_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+# 2. Install Bioconductor package (phyloseq) if missing
+if (!requireNamespace("phyloseq", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+  }
+  # update = FALSE prevents interactive prompts that can crash R Markdown renders
+  BiocManager::install("phyloseq", update = FALSE, ask = FALSE) 
+}
+
+# 3. Load all packages
+library(pwr)
+library(dplyr)
+library(phyloseq)
+library(vegan)
+
+# Setup directories
+# Note: if this.path::here() fails during knitting, you may need to 
+# replace it with here::here() or an absolute path.
+project_dir <- this.path::here(..=1)
+results_dir <- file.path(project_dir, "results/alpha_diversity")
+dir.create(results_dir, showWarnings = FALSE)
+
+in_dir <- file.path(project_dir, "data/phyloseq")
+ps <- readRDS(file = file.path(in_dir, "/phyloseq_object_species.rds"))
+
+# Pre-processing: remove unknown taxa and factorize subgroup
+ps <- prune_taxa(taxa_names(ps) != "Unknown", ps)
+ps@sam_data$subgroup <- factor(
+  ps@sam_data$subgroup,
+  levels = c("tooth_12m", "tooth_baseline", "implant_baseline", "implant_12m")
+)
+```
+
+## Rarefaction and Alpha Diversity Metrics
+
+We rarefy the data to an even depth to standardize sequencing effort across samples, then compute three alpha diversity measures: Observed, Shannon, and Simpson.
+
+```{r alpha_calc}
+set.seed(1)
+ps.rarefied <- rarefy_even_depth(
+  ps, 
+  rngseed = 1, 
+  sample.size = min(sample_sums(ps)), 
+  replace = FALSE
+)
+
+alpha <- estimate_richness(
+  ps.rarefied, 
+  split = TRUE,
+  measures = c("Observed", "Shannon", "Simpson")
+)
+
+alpha$sample_id <- rownames(alpha)
+alpha <- merge(
+  alpha,
+  data.frame(sample_data(ps.rarefied)),
+  by.x = "sample_id", 
+  by.y = "row.names"
+)
+
+alpha$subgroup <- factor(alpha$subgroup)  # 4 levels
+```
+
+## Alpha Diversity Power Analysis
+
+Here, we define a function to compute both the p-value and Cohen's $f$ effect size using a one-way ANOVA. 
+
+```{r alpha_power}
+# Helper: compute Cohen's f and extract p-value from one-way ANOVA
+effect_size_f <- function(y, group){
+  df <- data.frame(y = y, group = group)
+  df <- df[complete.cases(df), ]
+  aov_fit <- aov(y ~ group, data = df)
+  ss <- summary(aov_fit)[[1]]
+  
+  # Extract and print the ANOVA p-value
+  p_val <- ss["group", "Pr(>F)"]
+  cat("ANOVA p-value:", format.pval(p_val), "\n")
+  
+  SSb <- ss["group", "Sum Sq"]              # between-groups SS
+  SSt <- sum(ss[,"Sum Sq"])                 # total SS
+  eta2 <- SSb / SSt                         # eta-squared
+  f <- sqrt(eta2 / (1 - eta2))              # Cohen's f
+  return(f)
+}
+
+# Function to compute power-based N for one alpha metric
+power_for_metric <- function(metric_name){
+  y <- alpha[[metric_name]]
+  
+  cat("\n=========================================\n")
+  cat("Metric:", metric_name, "\n")
+  
+  # Calculate effect size and print p-value (handled inside effect_size_f)
+  f <- effect_size_f(y, alpha$subgroup)
+  
+  cat("Estimated effect size (Cohen's f):", round(f, 3), "\n")
+  
+  # If effect is ~0 (no signal), power calc is not meaningful
+  if(is.na(f) || f <= 0){
+    cat("Effect size is zero or undefined; cannot compute meaningful sample size.\n")
+    return(invisible(NULL))
+  }
+  
+  # Power analysis: 4 groups, 80% power, alpha = 0.05
+  pwr_res <- pwr.anova.test(k = nlevels(alpha$subgroup),
+                            f = f,
+                            sig.level = 0.05,
+                            power = 0.80)
+  
+  cat("Required total sample size for 80% power:", ceiling(pwr_res$n * pwr_res$k), "\n")
+  cat("Required sample size per group (assuming equal n):", ceiling(pwr_res$n), "\n")
+  
+  invisible(pwr_res)
+}
+
+# Run for the three alpha-diversity metrics
+res_observed <- power_for_metric("Observed")
+res_shannon  <- power_for_metric("Shannon")
+res_simpson  <- power_for_metric("Simpson")
+```
+
+## Beta Diversity Power Analysis
+
+Next, we calculate the Bray-Curtis and Jaccard distance matrices and run PERMANOVA (`adonis2`). We will extract the exact p-value and $R^2$, then convert $R^2$ to Cohen's $f$ to calculate the required sample sizes.
+
+```{r beta_power}
+bray_dist <- phyloseq::distance(ps.rarefied, method = "bray")
+jaccard_dist <- phyloseq::distance(ps.rarefied, method = "jaccard", binary = TRUE)
+
+meta_df <- data.frame(sample_data(ps.rarefied))
+meta_df <- meta_df[match(rownames(as.matrix(bray_dist)), rownames(meta_df)), ]
+
+# PERMANOVA for Bray-Curtis and Jaccard
+adonis_bray <- vegan::adonis2(as.matrix(bray_dist) ~ subgroup, data = meta_df)
+adonis_jaccard <- vegan::adonis2(as.matrix(jaccard_dist) ~ subgroup, data = meta_df)
+
+# Extract R² values
+R2_bray <- adonis_bray[1, "R2"]
+R2_jaccard <- adonis_jaccard[1, "R2"]
+
+# Extract p-values
+p_val_bray <- adonis_bray[1, "Pr(>F)"]
+p_val_jaccard <- adonis_jaccard[1, "Pr(>F)"]
+
+cat("\n=========================================\n")
+cat("Beta Diversity Analysis\n")
+cat("-----------------------------------------\n")
+cat("Bray-Curtis:\n")
+cat("  PERMANOVA p-value =", format.pval(p_val_bray), "\n")
+cat("  R² =", round(R2_bray, 3), "\n")
+
+cat("\nJaccard:\n")
+cat("  PERMANOVA p-value =", format.pval(p_val_jaccard), "\n")
+cat("  R² =", round(R2_jaccard, 3), "\n")
+
+# Convert R² to Cohen's f
+f_bray    <- sqrt(R2_bray    / (1 - R2_bray))
+f_jaccard <- sqrt(R2_jaccard / (1 - R2_jaccard))
+
+cat("\nEffect Sizes:\n")
+cat("  Bray-Curtis f =", round(f_bray, 3), "\n")
+cat("  Jaccard f =", round(f_jaccard, 3), "\n")
+
+# Function to compute required N from f
+beta_power_from_f <- function(f, k = 4, power = 0.80, alpha = 0.05){
+  if(is.na(f) || f <= 0){
+    cat("Effect size f is zero/NA; cannot compute meaningful sample size.\n")
+    return(invisible(NULL))
+  }
+  res <- pwr.anova.test(k = k, f = f, sig.level = alpha, power = power)
+  total_n <- ceiling(res$n * k)
+  per_group <- ceiling(res$n)
+  list(result = res, total_n = total_n, per_group = per_group)
+}
+
+cat("\n-----------------------------------------\n")
+# Power for Bray-Curtis
+pow_bray <- beta_power_from_f(f_bray, k = nlevels(meta_df$subgroup))
+cat("Bray-Curtis PERMANOVA Power:\n")
+cat("  Required total N for 80% power:", pow_bray$total_n, "\n")
+cat("  Required N per group:", pow_bray$per_group, "\n\n")
+
+# Power for Jaccard
+pow_jac <- beta_power_from_f(f_jaccard, k = nlevels(meta_df$subgroup))
+cat("Jaccard PERMANOVA Power:\n")
+cat("  Required total N for 80% power:", pow_jac$total_n, "\n")
+cat("  Required N per group:", pow_jac$per_group, "\n")
+```
